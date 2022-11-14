@@ -48,6 +48,11 @@ using lifecycle_msgs::msg::State;
 
 DiffDriveController::DiffDriveController() : controller_interface::ControllerInterface() {}
 
+const char * DiffDriveController::feedback_type() const
+{
+  return odom_params_.position_feedback ? HW_IF_POSITION : HW_IF_VELOCITY;
+}
+
 controller_interface::return_type DiffDriveController::init(const std::string & controller_name)
 {
   // initialize lifecycle node
@@ -75,6 +80,7 @@ controller_interface::return_type DiffDriveController::init(const std::string & 
     auto_declare<std::vector<double>>("pose_covariance_diagonal", std::vector<double>());
     auto_declare<std::vector<double>>("twist_covariance_diagonal", std::vector<double>());
     auto_declare<bool>("open_loop", odom_params_.open_loop);
+    auto_declare<bool>("position_feedback", odom_params_.position_feedback);
     auto_declare<bool>("enable_odom_tf", odom_params_.enable_odom_tf);
 
     auto_declare<double>("cmd_vel_timeout", cmd_vel_timeout_.count() / 1000.0);
@@ -131,11 +137,11 @@ InterfaceConfiguration DiffDriveController::state_interface_configuration() cons
   std::vector<std::string> conf_names;
   for (const auto & joint_name : left_wheel_names_)
   {
-    conf_names.push_back(joint_name + "/" + HW_IF_POSITION);
+    conf_names.push_back(joint_name + "/" + feedback_type());
   }
   for (const auto & joint_name : right_wheel_names_)
   {
-    conf_names.push_back(joint_name + "/" + HW_IF_POSITION);
+    conf_names.push_back(joint_name + "/" + feedback_type());
   }
   return {interface_configuration_type::INDIVIDUAL, conf_names};
 }
@@ -190,28 +196,37 @@ controller_interface::return_type DiffDriveController::update()
   }
   else
   {
-    double left_position_mean = 0.0;
-    double right_position_mean = 0.0;
+    double left_feedback_mean = 0.0;
+    double right_feedback_mean = 0.0;
     for (size_t index = 0; index < wheels.wheels_per_side; ++index)
     {
-      const double left_position = registered_left_wheel_handles_[index].position.get().get_value();
-      const double right_position =
-        registered_right_wheel_handles_[index].position.get().get_value();
+      const double left_feedback = registered_left_wheel_handles_[index].feedback.get().get_value();
+      const double right_feedback =
+        registered_right_wheel_handles_[index].feedback.get().get_value();
 
-      if (std::isnan(left_position) || std::isnan(right_position))
+      if (std::isnan(left_feedback) || std::isnan(right_feedback))
       {
         RCLCPP_ERROR(
-          logger, "Either the left or right wheel position is invalid for index [%zu]", index);
+          logger, "Either the left or right wheel %s is invalid for index [%zu]", feedback_type(),
+          index);
         return controller_interface::return_type::ERROR;
       }
 
-      left_position_mean += left_position;
-      right_position_mean += right_position;
+      left_feedback_mean += left_feedback;
+      right_feedback_mean += right_feedback;
     }
-    left_position_mean /= wheels.wheels_per_side;
-    right_position_mean /= wheels.wheels_per_side;
+    left_feedback_mean /= wheels.wheels_per_side;
+    right_feedback_mean /= wheels.wheels_per_side;
 
-    odometry_.update(left_position_mean, right_position_mean, current_time);
+    if (odom_params_.position_feedback)
+    {
+      odometry_.update(left_feedback_mean, right_feedback_mean, time);
+    }
+    else
+    {
+      odometry_.updateFromVelocity(
+        left_feedback_mean * period.seconds(), right_feedback_mean * period.seconds(), time);
+    }
   }
 
   tf2::Quaternion orientation;
@@ -603,10 +618,13 @@ CallbackReturn DiffDriveController::configure_side(
   registered_handles.reserve(wheel_names.size());
   for (const auto & wheel_name : wheel_names)
   {
+    const auto interface_name = feedback_type();
     const auto state_handle = std::find_if(
-      state_interfaces_.cbegin(), state_interfaces_.cend(), [&wheel_name](const auto & interface) {
-        return interface.get_name() == wheel_name &&
-               interface.get_interface_name() == HW_IF_POSITION;
+      state_interfaces_.cbegin(), state_interfaces_.cend(),
+      [&wheel_name, &interface_name](const auto & interface)
+      {
+        return interface.get_prefix_name() == wheel_name &&
+               interface.get_interface_name() == interface_name;
       });
 
     if (state_handle == state_interfaces_.cend())
