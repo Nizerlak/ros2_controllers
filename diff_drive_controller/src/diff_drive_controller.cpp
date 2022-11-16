@@ -190,6 +190,8 @@ controller_interface::return_type DiffDriveController::update()
   const double left_wheel_radius = wheels.left_radius_multiplier * wheels.radius;
   const double right_wheel_radius = wheels.right_radius_multiplier * wheels.radius;
 
+  const auto update_dt = current_time - previous_update_timestamp_;
+
   if (odom_params_.open_loop)
   {
     odometry_.updateOpenLoop(linear_command, angular_command, current_time);
@@ -220,12 +222,12 @@ controller_interface::return_type DiffDriveController::update()
 
     if (odom_params_.position_feedback)
     {
-      odometry_.update(left_feedback_mean, right_feedback_mean, time);
+      odometry_.update(left_feedback_mean, right_feedback_mean, current_time);
     }
     else
     {
       odometry_.updateFromVelocity(
-        left_feedback_mean * period.seconds(), right_feedback_mean * period.seconds(), time);
+        left_feedback_mean * update_dt.seconds(), right_feedback_mean * update_dt.seconds(), current_time);
     }
   }
 
@@ -265,7 +267,6 @@ controller_interface::return_type DiffDriveController::update()
     }
   }
 
-  const auto update_dt = current_time - previous_update_timestamp_;
   previous_update_timestamp_ = current_time;
 
   auto & last_command = previous_commands_.back().twist;
@@ -623,7 +624,7 @@ CallbackReturn DiffDriveController::configure_side(
       state_interfaces_.cbegin(), state_interfaces_.cend(),
       [&wheel_name, &interface_name](const auto & interface)
       {
-        return interface.get_prefix_name() == wheel_name &&
+        return interface.get_name() == wheel_name &&
                interface.get_interface_name() == interface_name;
       });
 
